@@ -274,6 +274,7 @@ mark{background:#fef08a;border-radius:2px;padding:0 1px}
       <button class="tab" id="tab-cond-btn" onclick="switchTab('conductores')" style="display:none"><i class="ti ti-steering-wheel"></i> Conductores <span class="notif" id="inc-notif" style="display:none">!</span></button>
       <button class="tab" id="tab-corr-btn" onclick="switchTab('correcciones')" style="display:none"><i class="ti ti-edit"></i> Correcciones <span class="notif" id="corr-notif" style="display:none">0</span></button>
       <button class="tab" id="tab-gest-btn" onclick="switchTab('gestion')" style="display:none"><i class="ti ti-settings"></i> Gestión</button>
+      <button class="tab" id="tab-inf-btn" onclick="switchTab('informes')" style="display:none"><i class="ti ti-chart-bar"></i> Informes</button>
     </div>
 
     <!-- PACIENTES -->
@@ -384,6 +385,21 @@ mark{background:#fef08a;border-radius:2px;padding:0 1px}
     </div>
   </div>
 </div>
+
+    <!-- INFORMES -->
+    <div id="tab-informes" class="panel">
+    <div class="inner">
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">Informes de conductores</div>
+      <div style="font-size:12px;color:var(--txt2);margin-bottom:1rem">Consulta el historial diario por conductor</div>
+      <div style="display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap">
+        <select id="inf-conductor" class="gc-input" style="flex:1;min-width:150px" onchange="loadInforme()">
+          <option value="">— Selecciona conductor —</option>
+        </select>
+        <input type="date" id="inf-fecha" class="gc-input" style="flex:1;min-width:140px" onchange="loadInforme()">
+      </div>
+      <div id="informe-content"></div>
+    </div>
+    </div>
 
 <!-- SIDEBAR HISTORIAL CONDUCTOR -->
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
@@ -560,6 +576,7 @@ function initApp(){
     document.getElementById('eq-filter-coord').style.display='block';
     document.getElementById('estado-bar').style.display='none';
     document.getElementById('tab-ruta-btn').style.display='none';
+    document.getElementById('tab-inf-btn').style.display='flex';
     // Mostrar botón toggle vista
     const tvb = document.getElementById('toggle-vista-btn');
     if(tvb) tvb.style.display='flex';
@@ -1223,7 +1240,7 @@ function submitCorreccion(){
 
 // ═══ TABS ═══
 function switchTab(tab){
-  const all=['pacientes','ruta','mapa','conductores','correcciones','gestion'];
+  const all=['pacientes','ruta','mapa','conductores','correcciones','gestion','informes'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',all[i]===tab));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   const el=document.getElementById('tab-'+tab); if(el) el.classList.add('active');
@@ -1231,6 +1248,7 @@ function switchTab(tab){
   if(tab==='conductores'){ loadEstados(); }
   if(tab==='correcciones'){ loadCorrecciones(); }
   if(tab==='gestion'){ loadConductores(); }
+  if(tab==='informes'){ initInformes(); }
   if(tab==='ruta'){ updateRutaHeader(); renderHistorial(); }
 }
 
@@ -1658,6 +1676,107 @@ async function generarPDFConductor(){
   setTimeout(()=>win.print(),500);
 }
 
+
+// ═══ INFORMES ═══
+function initInformes(){
+  // Populate conductor selector
+  const sel = document.getElementById('inf-conductor');
+  sel.innerHTML = '<option value="">— Selecciona conductor —</option>'
+    + conductoresData.map(c=>'<option value="'+c.equipo+'|'+c.nombre+'">'+c.nombre+' ('+c.equipo+')</option>').join('');
+  // Default date = today
+  const hoy = new Date();
+  const dd = hoy.getDate().toString().padStart(2,'0');
+  const mm = (hoy.getMonth()+1).toString().padStart(2,'0');
+  const yyyy = hoy.getFullYear();
+  document.getElementById('inf-fecha').value = yyyy+'-'+mm+'-'+dd;
+  loadInforme();
+}
+
+function loadInforme(){
+  const val = document.getElementById('inf-conductor').value;
+  const fechaISO = document.getElementById('inf-fecha').value;
+  const content = document.getElementById('informe-content');
+  if(!val||!fechaISO){ content.innerHTML='<div class="empty">Selecciona conductor y fecha</div>'; return; }
+
+  const [equipo,conductor] = val.split('|');
+  // Convert YYYY-MM-DD to DD/MM/YYYY
+  const [yyyy,mm,dd] = fechaISO.split('-');
+  const fecha = dd+'/'+mm+'/'+yyyy;
+
+  content.innerHTML='<div class="loading"><i class="ti ti-loader-2"></i>Cargando...</div>';
+
+  fetch(API+'?action=getHistorialConductor&equipo='+encodeURIComponent(equipo)+'&conductor='+encodeURIComponent(conductor))
+    .then(r=>r.json())
+    .then(j=>{
+      if(!j.ok||!j.data.length){
+        content.innerHTML='<div class="empty"><i class="ti ti-calendar-off" style="font-size:28px;display:block;margin-bottom:8px"></i>Sin registros para esta fecha y conductor.</div>';
+        return;
+      }
+      // Filter by fecha
+      const registros = j.data.filter(r=>r.fecha===fecha).sort((a,b)=>a.hora.localeCompare(b.hora));
+      if(!registros.length){
+        content.innerHTML='<div class="empty">Sin registros para el '+fecha+'</div>';
+        return;
+      }
+
+      const visitas = registros.filter(r=>r.estado==='En domicilio');
+      const incidentes = registros.filter(r=>r.estado.includes('Incidente'));
+      const horaInicio = registros[0]?.hora||'';
+      const horaFin = registros[registros.length-1]?.hora||'';
+
+      // Summary cards
+      let html = '<div class="stats" style="grid-template-columns:repeat(4,1fr)">'
+        +'<div class="stat"><div class="stat-l">Inicio</div><div class="stat-v" style="font-size:18px">'+horaInicio+'</div></div>'
+        +'<div class="stat"><div class="stat-l">Fin</div><div class="stat-v" style="font-size:18px">'+horaFin+'</div></div>'
+        +'<div class="stat"><div class="stat-l">Visitas</div><div class="stat-v" style="color:var(--verde)">'+visitas.length+'</div></div>'
+        +'<div class="stat"><div class="stat-l">Incidentes</div><div class="stat-v" style="color:var(--rojo)">'+incidentes.length+'</div></div>'
+        +'</div>';
+
+      // Timeline
+      html += '<div style="font-size:12px;font-weight:500;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;margin:1rem 0 8px">Historial del día</div>';
+      html += '<div style="border:.5px solid var(--borde);border-radius:10px;overflow:hidden">';
+      registros.forEach((r,i)=>{
+        const cfg = ESTADO_CFG[r.estado]||{color:'#6b7280',bg:'#f9fafb'};
+        html += '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;'+(i>0?'border-top:.5px solid var(--borde)':'')+';background:'+(i%2===0?'#fff':'#f9fafb')+'">'
+          +'<div style="width:8px;height:8px;border-radius:50%;background:'+cfg.color+';flex-shrink:0"></div>'
+          +'<div style="flex:1">'
+          +'<div style="font-size:13px;font-weight:500;color:'+cfg.color+'">'+r.estado+'</div>'
+          +(r.paciente?'<div style="font-size:11px;color:var(--txt2)">👤 '+r.paciente+'</div>':'')
+          +'</div>'
+          +'<div style="font-size:12px;color:var(--txt2);flex-shrink:0">'+r.hora+'</div>'
+          +(r.lat?'<a href="https://www.google.com/maps?q='+r.lat+','+r.lng+'" target="_blank" style="font-size:11px;color:var(--azul);text-decoration:none;flex-shrink:0">📍</a>':'')
+          +'</div>';
+      });
+      html += '</div>';
+
+      // Export button
+      html += '<button id="btn-export-inf" style="width:100%;padding:11px;background:var(--verde);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:DM Sans,sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:1rem"><i class="ti ti-download"></i> Exportar Excel</button>';
+        +'<i class="ti ti-download"></i> Exportar Excel</button>';
+
+      content.innerHTML = html;
+      // Store for export
+      content._registros = registros;
+      content._conductor = conductor;
+      content._fecha = fecha;
+      // Add export button listener
+      const exportBtn = document.getElementById('btn-export-inf');
+      if(exportBtn) exportBtn.onclick = ()=>exportInforme(conductor, fecha);
+    })
+    .catch(()=>{ content.innerHTML='<div class="empty">Error al cargar datos</div>'; });
+}
+
+function exportInforme(conductor, fecha){
+  const content = document.getElementById('informe-content');
+  const registros = content._registros;
+  if(!registros||!registros.length){ showToast('Sin datos para exportar'); return; }
+  const h = ['Fecha','Hora','Equipo','Conductor','Estado','Paciente','Lat','Lng'];
+  const rows = registros.map(r=>[r.fecha,r.hora,r.equipo,r.conductor,r.estado,r.paciente||'',r.lat||'',r.lng||''].map(v=>'"'+String(v||'').replace(/"/g,'""')+'"').join(','));
+  const csv = [h.join(','),...rows].join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv'}));
+  a.download = 'UHD_'+conductor+'_'+fecha.replace(/\//g,'-')+'.csv';
+  a.click();
+}
 
 function showToast(msg){
   const t=document.getElementById('toast');
