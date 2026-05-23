@@ -1002,10 +1002,13 @@ function renderConductoresRT(){
     const col=COLORS[c.equipo]||'#374151';
     const ini=c.nombre.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const horaFormateada=est?formatHora(est.hora):'';
+    const pacienteActual = est?.paciente||'';
     return `<div class="cond-rt-card" style="border-left-color:${col};cursor:pointer" onclick="openSidebar('${c.equipo}','${c.nombre}','${col}')">
       <div class="cond-rt-av" style="background:${col}">${ini}</div>
-      <div><div style="font-size:14px;font-weight:600">${c.nombre}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:600">${c.nombre}</div>
         <div style="font-size:11px;color:var(--txt2)">${c.equipo}${c.empresa?' · '+c.empresa:''}</div>
+        ${pacienteActual&&est?.estado==='En domicilio'?`<div style="font-size:11px;color:var(--verde);font-weight:500;margin-top:2px">📍 ${pacienteActual}</div>`:''}
       </div>
       <div class="cond-rt-estado">
         <div class="cond-rt-pill" style="background:${cfg.bg};color:${cfg.color}">${est?est.estado:'Sin estado'}</div>
@@ -1507,6 +1510,162 @@ function guardarEstadoPaciente(estado, gps, el, paciente){
         showToast(`En domicilio${paciente?' — '+paciente:''}`);
       }
     }).catch(()=>showToast('Error al guardar estado'));
+}
+
+// ═══ RESUMEN DÍA CONDUCTOR ═══
+function mostrarBotonResumen(){
+  // Agregar botón en tab ruta si no existe ya
+  const wrap = document.getElementById('ruta-historial-wrap');
+  if(!wrap) return;
+  const existing = document.getElementById('btn-descargar-resumen');
+  if(existing) return;
+  const btn = document.createElement('button');
+  btn.id = 'btn-descargar-resumen';
+  btn.innerHTML = '<i class="ti ti-download"></i> Descargar resumen del día (PDF)';
+  btn.style.cssText = 'width:100%;padding:13px;background:var(--verde);color:#fff;border:none;border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:1rem';
+  btn.onclick = generarPDFConductor;
+  wrap.parentNode.insertBefore(btn, wrap);
+}
+
+function haversineKm(lat1,lon1,lat2,lon2){
+  const R=6371;
+  const dLat=(lat2-lat1)*Math.PI/180;
+  const dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)*Math.sin(dLat/2)+
+    Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*
+    Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+// Coordenadas Hospital El Pino
+const HOSP_LAT = -33.5985;
+const HOSP_LNG = -70.7063;
+
+async function geocodificarDir(dir){
+  if(!dir) return null;
+  const clean = dir.split(' - ')[0].trim();
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(clean)}&format=json&limit=1&countrycodes=cl`);
+    const d = await r.json();
+    if(d&&d[0]) return {lat:parseFloat(d[0].lat),lng:parseFloat(d[0].lon)};
+  } catch(e){}
+  return null;
+}
+
+async function generarPDFConductor(){
+  showToast('Generando resumen...');
+
+  // Recopilar historial del día desde el servidor
+  const resp = await fetch(`${API}?action=getHistorialConductor&equipo=${encodeURIComponent(miEquipo)}&conductor=${encodeURIComponent(miNombre)}`);
+  const json = await resp.json();
+  if(!json.ok||!json.data.length){ showToast('Sin datos para generar resumen'); return; }
+
+  const registros = json.data.sort((a,b)=>a.hora.localeCompare(b.hora));
+  const fecha = registros[0]?.fecha || new Date().toLocaleDateString('es-CL');
+
+  // Construir segmentos: Hospital → [domicilios] → Hospital
+  const visitas = registros.filter(r=>r.estado==='En domicilio');
+  const domicilios = [];
+
+  for(const v of visitas){
+    // Buscar paciente en allPts para obtener dirección
+    const pt = allPts.find(p=>p.nombre===v.paciente&&p.equipo===miEquipo);
+    let coords = null;
+    if(v.lat&&v.lng&&v.lat!==''){
+      coords = {lat:parseFloat(v.lat),lng:parseFloat(v.lng)};
+    } else if(pt){
+      coords = await geocodificarDir(pt.corregida||pt.dirMaps);
+    }
+    domicilios.push({
+      paciente: v.paciente||'Sin especificar',
+      hora: v.hora,
+      dir: pt?(pt.corregida||pt.dirMaps||''):'',
+      coords
+    });
+  }
+
+  // Calcular KM segmento a segmento
+  let kmTotal = 0;
+  const segmentos = [];
+  let prev = {lat:HOSP_LAT,lng:HOSP_LNG,nombre:'Hospital El Pino'};
+
+  for(const d of domicilios){
+    if(d.coords){
+      const km = haversineKm(prev.lat,prev.lng,d.coords.lat,d.coords.lng);
+      segmentos.push({de:prev.nombre,a:d.paciente,km:km.toFixed(2)});
+      kmTotal += km;
+      prev = {lat:d.coords.lat,lng:d.coords.lng,nombre:d.paciente};
+    }
+  }
+  // Último segmento de regreso al hospital
+  if(prev.nombre!=='Hospital El Pino'){
+    const km = haversineKm(prev.lat,prev.lng,HOSP_LAT,HOSP_LNG);
+    segmentos.push({de:prev.nombre,a:'Hospital El Pino',km:km.toFixed(2)});
+    kmTotal += km;
+  }
+
+  // Generar HTML del PDF
+  const estadosLinea = registros.map(r=>
+    `<tr>
+      <td>${r.hora}</td>
+      <td style="color:${r.estado==='Incidente'?'#c81e1e':r.estado==='En domicilio'?'#7c3aed':r.estado==='En ruta'?'#1a56db':'#374151'};font-weight:500">${r.estado}</td>
+      <td>${r.paciente||''}</td>
+    </tr>`).join('');
+
+  const kmLinea = segmentos.map(s=>
+    `<tr><td>${s.de}</td><td>→</td><td>${s.a}</td><td style="text-align:right;font-weight:600">${s.km} km</td></tr>`
+  ).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <style>
+    body{font-family:Arial,sans-serif;padding:30px;color:#111;max-width:700px;margin:0 auto}
+    h1{color:#C41E1E;font-size:22px;margin-bottom:4px}
+    h2{color:#1A5C2A;font-size:16px;margin:20px 0 8px}
+    .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:12px;border-bottom:2px solid #C41E1E}
+    .badge{background:#C41E1E;color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}
+    table{width:100%;border-collapse:collapse;margin-bottom:1rem}
+    th{background:#1A5C2A;color:#fff;padding:8px 10px;text-align:left;font-size:12px}
+    td{padding:7px 10px;border-bottom:1px solid #e5e7eb;font-size:12px}
+    tr:nth-child(even){background:#f9fafb}
+    .total{background:#1A5C2A;color:#fff;padding:10px 14px;border-radius:8px;font-size:15px;font-weight:700;text-align:right;margin-top:8px}
+    .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;text-align:center}
+  </style></head><body>
+  <div class="header">
+    <div>
+      <h1>UHD Rutas — Resumen del Día</h1>
+      <div style="font-size:13px;color:#6b7280">${fecha} · ${miEquipo} · ${miNombre}</div>
+    </div>
+    <div class="badge">Hospitalización Domiciliaria</div>
+  </div>
+
+  <h2>📋 Registro de estados</h2>
+  <table>
+    <thead><tr><th>Hora</th><th>Estado</th><th>Paciente</th></tr></thead>
+    <tbody>${estadosLinea}</tbody>
+  </table>
+
+  <h2>🏠 Visitas realizadas (${domicilios.length})</h2>
+  <table>
+    <thead><tr><th>Hora</th><th>Paciente</th><th>Dirección</th></tr></thead>
+    <tbody>${domicilios.map(d=>`<tr><td>${d.hora}</td><td style="font-weight:500">${d.paciente}</td><td style="font-size:11px;color:#6b7280">${d.dir}</td></tr>`).join('')}</tbody>
+  </table>
+
+  ${segmentos.length?`
+  <h2>📍 Kilómetros recorridos</h2>
+  <table>
+    <thead><tr><th>Desde</th><th></th><th>Hasta</th><th style="text-align:right">KM</th></tr></thead>
+    <tbody>${kmLinea}</tbody>
+  </table>
+  <div class="total">Total estimado: ${kmTotal.toFixed(1)} km</div>`:''}
+
+  <div class="footer">Generado por UHD Rutas · ${new Date().toLocaleString('es-CL')} · Este resumen es una estimación basada en distancia en línea recta</div>
+  </body></html>`;
+
+  // Abrir en nueva pestaña para imprimir/guardar como PDF
+  const win = window.open('','_blank');
+  win.document.write(html);
+  win.document.close();
+  setTimeout(()=>win.print(), 500);
 }
 
 function showToast(msg){
