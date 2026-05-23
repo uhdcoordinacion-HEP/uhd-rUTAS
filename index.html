@@ -7,6 +7,8 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
 :root{
   --azul:#C41E1E;--azul-c:#FDEAEA;--verde:#1A5C2A;--verde-c:#E6F2E9;
@@ -309,12 +311,25 @@ mark{background:#fef08a;border-radius:2px;padding:0 1px}
       <div class="mapa-wrap">
         <div class="mapa-toolbar">
           <div id="mapa-filter"></div>
-          <label style="font-size:12px;color:var(--txt2);display:flex;align-items:center;gap:5px;margin-left:auto">
+          <label style="font-size:12px;color:var(--txt2);display:flex;align-items:center;gap:5px">
             <input type="checkbox" id="solo-hoy" onchange="renderMapa()"> Solo hoy
           </label>
+          <button id="toggle-mapa-btn" onclick="toggleModoMapa()" 
+            style="margin-left:auto;padding:6px 12px;border:1.5px solid var(--borde);border-radius:8px;background:#fff;font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px">
+            <i class="ti ti-map-2"></i> <span id="toggle-mapa-label">Ver con calles</span>
+          </button>
         </div>
-        <div style="overflow-x:auto">
+        <!-- SVG map -->
+        <div id="mapa-svg-wrap" style="overflow-x:auto">
           <svg id="mapa-svg" viewBox="0 0 680 400" style="width:100%;min-width:340px;height:auto;display:block"></svg>
+        </div>
+        <!-- Leaflet map -->
+        <div id="mapa-leaflet-wrap" style="display:none">
+          <div id="map-leaflet" style="height:420px;width:100%"></div>
+          <div style="padding:8px 14px;font-size:11px;color:var(--txt2);background:#f9fafb;text-align:center">
+            <i class="ti ti-loader-2" id="mapa-loading-icon" style="animation:spin 1s linear infinite;display:none"></i>
+            Cargando ubicaciones... pueden tardar unos segundos
+          </div>
         </div>
         <div class="mapa-legend" id="mapa-legend"></div>
       </div>
@@ -1196,6 +1211,104 @@ function toggleVista(){
     switchTab('pacientes');
     showToast('Vista coordinador activada');
   }
+}
+
+// ═══ MAPA DUAL MODE ═══
+let mapaMode = 'svg'; // 'svg' or 'leaflet'
+let leafletMap = null;
+let leafletMarkers = [];
+
+function toggleModoMapa(){
+  mapaMode = mapaMode==='svg' ? 'leaflet' : 'svg';
+  document.getElementById('toggle-mapa-label').textContent = mapaMode==='svg' ? 'Ver con calles' : 'Ver esquemático';
+  document.getElementById('mapa-svg-wrap').style.display = mapaMode==='svg' ? 'block' : 'none';
+  document.getElementById('mapa-leaflet-wrap').style.display = mapaMode==='leaflet' ? 'block' : 'none';
+  if(mapaMode==='leaflet') renderMapaLeaflet();
+  else renderMapa();
+}
+
+function limpiarDirParaGeo(dir){
+  // Remove reference after " - " keeping only street + number + commune
+  if(!dir) return '';
+  let clean = dir.split(' - ')[0].trim();
+  // Remove extra text after comma that isn't commune
+  return clean;
+}
+
+function renderMapaLeaflet(){
+  if(!leafletMap){
+    leafletMap = L.map('map-leaflet').setView([-33.585,-70.689],13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      attribution:'© OpenStreetMap', maxZoom:19
+    }).addTo(leafletMap);
+  }
+  leafletMarkers.forEach(m=>leafletMap.removeLayer(m));
+  leafletMarkers=[];
+
+  const soloHoy = document.getElementById('solo-hoy')?.checked||false;
+  let pts = allPts;
+  if(userRole==='conductor'){ if(selEq) pts=pts.filter(p=>p.equipo===selEq); pts=pts.filter(p=>p.visitaHoy); }
+  if(mapFilter) pts=pts.filter(p=>p.equipo===mapFilter);
+  if(soloHoy) pts=pts.filter(p=>p.visitaHoy);
+
+  const loadIcon = document.getElementById('mapa-loading-icon');
+  if(loadIcon) loadIcon.style.display='inline-block';
+
+  const bounds=[];
+  let done=0;
+  const total=pts.filter(p=>p.corregida||p.dirMaps).length;
+
+  pts.forEach((p,i)=>{
+    const dir=p.corregida||p.dirMaps;
+    if(!dir){ done++; if(done===total&&bounds.length) leafletMap.fitBounds(bounds,{padding:[30,30]}); return; }
+    const dirLimpia=limpiarDirParaGeo(dir);
+    const col=COLORS[p.equipo]||'#374151';
+    const num=p.equipo.replace('UHD ','');
+    const esHoy=p.visitaHoy;
+
+    setTimeout(()=>{
+      fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(dirLimpia)}&format=json&limit=1&countrycodes=cl&addressdetails=0`)
+        .then(r=>r.json())
+        .then(data=>{
+          if(data&&data[0]){
+            const lat=parseFloat(data[0].lat), lng=parseFloat(data[0].lon);
+            const icon=L.divIcon({
+              className:'',
+              html:`<div style="width:28px;height:28px;border-radius:50%;background:${col};border:2.5px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,.3);opacity:${esHoy?1:0.5};font-family:'DM Sans',sans-serif">${num}</div>`,
+              iconSize:[28,28],iconAnchor:[14,14]
+            });
+            const marker=L.marker([lat,lng],{icon}).addTo(leafletMap)
+              .bindPopup(`<div style="font-family:'DM Sans',sans-serif;min-width:180px">
+                <div style="font-weight:600;font-size:13px;margin-bottom:4px">${p.nombre}</div>
+                <div style="font-size:11px;color:#6b7280;margin-bottom:6px">${dir}</div>
+                ${p.referencia?`<div style="font-size:11px;color:#1a56db;margin-bottom:6px">📍 ${p.referencia}</div>`:''}
+                ${p.telefono?`<div style="font-size:11px;margin-bottom:8px">📞 ${p.telefono}</div>`:''}
+                <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(dir)}" target="_blank"
+                   style="display:block;text-align:center;padding:6px;background:var(--azul,#1a56db);color:white;border-radius:6px;font-size:12px;font-weight:500;text-decoration:none">
+                  Navegar →
+                </a>
+              </div>`);
+            leafletMarkers.push(marker);
+            bounds.push([lat,lng]);
+          }
+        }).catch(()=>{})
+        .finally(()=>{
+          done++;
+          if(done===total){
+            if(loadIcon) loadIcon.style.display='none';
+            if(bounds.length) leafletMap.fitBounds(bounds,{padding:[30,30]});
+          }
+        });
+    }, i*400);
+  });
+
+  setTimeout(()=>leafletMap.invalidateSize(),200);
+
+  // Update legend
+  const eqs=[...new Set(pts.map(p=>p.equipo))].sort();
+  document.getElementById('mapa-legend').innerHTML=eqs.map(eq=>
+    `<div class="leg-item"><div class="leg-dot" style="background:${COLORS[eq]||'#333'}"></div>${eq} — ${pts.filter(p=>p.equipo===eq).length}</div>`
+  ).join('');
 }
 
 function showToast(msg){
