@@ -517,9 +517,23 @@ function initApp(){
 }
 
 function checkRutaAprobada(){
-  // Candado temporalmente desactivado para marcha blanca
-  // Se reactivará cuando el flujo esté estable
-  showSelectorConductor();
+  fetch(API+'?action=getRutaAprobada')
+    .then(r=>r.json())
+    .then(j=>{
+      if(j.aprobada===true){
+        showSelectorConductor();
+      } else {
+        document.getElementById('candado-screen').style.display='block';
+        document.getElementById('selector-screen').style.display='none';
+        document.getElementById('main-app').style.display='none';
+        // Reintentar cada 30 segundos
+        setTimeout(checkRutaAprobada, 30000);
+      }
+    })
+    .catch(()=>{
+      // Si hay error de conexión, mostrar selector igual
+      showSelectorConductor();
+    });
 }
 
 function showSelectorConductor(){
