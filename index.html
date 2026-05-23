@@ -181,6 +181,22 @@ body{font-family:'DM Sans',sans-serif;background:#f0f2f5;color:var(--txt);min-he
 .empty{text-align:center;padding:2rem;color:var(--txt2);font-size:13px;line-height:1.7}
 .toast{position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;z-index:1000;display:none;white-space:nowrap;box-shadow:var(--sombra-lg)}
 .eq-group-hdr{display:flex;align-items:center;gap:8px;margin:14px 0 8px}
+
+/* SIDEBAR HISTORIAL */
+.sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:600;display:none}
+.sidebar{position:fixed;top:0;right:-380px;width:360px;height:100vh;background:#fff;z-index:700;
+  box-shadow:-4px 0 20px rgba(0,0,0,.15);transition:right .25s ease;overflow-y:auto;display:flex;flex-direction:column}
+.sidebar.open{right:0}
+.sidebar-hdr{padding:16px;border-bottom:1px solid var(--borde);display:flex;align-items:center;gap:10px;position:sticky;top:0;background:#fff;z-index:1}
+.sidebar-av{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:600;color:#fff;flex-shrink:0}
+.sidebar-close{border:none;background:none;cursor:pointer;font-size:22px;color:var(--gris);margin-left:auto;padding:4px}
+.sidebar-body{padding:16px;flex:1}
+.historial-item{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:.5px solid var(--borde)}
+.historial-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.historial-estado{font-size:13px;font-weight:500}
+.historial-hora{font-size:12px;color:var(--txt2);margin-left:auto}
+.historial-gps{font-size:10px;color:var(--azul);display:block;margin-top:2px}
+.sidebar-estado-pill{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;display:inline-block;margin-top:6px}
 mark{background:#fef08a;border-radius:2px;padding:0 1px}
 </style>
 </head>
@@ -366,6 +382,24 @@ mark{background:#fef08a;border-radius:2px;padding:0 1px}
       <button class="gc-aprobado" onclick="aprobarRuta()"><i class="ti ti-check"></i> ✅ Aprobar ruta del día — liberar acceso conductores</button>
     </div>
     </div>
+  </div>
+</div>
+
+<!-- SIDEBAR HISTORIAL CONDUCTOR -->
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+<div class="sidebar" id="sidebar-historial">
+  <div class="sidebar-hdr">
+    <div class="sidebar-av" id="sb-avatar" style="background:#374151">—</div>
+    <div>
+      <div style="font-size:15px;font-weight:600" id="sb-nombre">—</div>
+      <div style="font-size:11px;color:var(--txt2)" id="sb-equipo">—</div>
+      <div id="sb-estado-pill" class="sidebar-estado-pill">Sin estado</div>
+    </div>
+    <button class="sidebar-close" onclick="closeSidebar()"><i class="ti ti-x"></i></button>
+  </div>
+  <div class="sidebar-body">
+    <div style="font-size:12px;font-weight:500;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Historial de hoy</div>
+    <div id="sb-historial"><div class="loading"><i class="ti ti-loader-2"></i>Cargando...</div></div>
   </div>
 </div>
 
@@ -941,7 +975,7 @@ function renderConductoresRT(){
     const col=COLORS[c.equipo]||'#374151';
     const ini=c.nombre.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const horaFormateada=est?formatHora(est.hora):'';
-    return `<div class="cond-rt-card" style="border-left-color:${col}">
+    return `<div class="cond-rt-card" style="border-left-color:${col};cursor:pointer" onclick="openSidebar('${c.equipo}','${c.nombre}','${col}')">
       <div class="cond-rt-av" style="background:${col}">${ini}</div>
       <div><div style="font-size:14px;font-weight:600">${c.nombre}</div>
         <div style="font-size:11px;color:var(--txt2)">${c.equipo}${c.empresa?' · '+c.empresa:''}</div>
@@ -1309,6 +1343,56 @@ function renderMapaLeaflet(){
   document.getElementById('mapa-legend').innerHTML=eqs.map(eq=>
     `<div class="leg-item"><div class="leg-dot" style="background:${COLORS[eq]||'#333'}"></div>${eq} — ${pts.filter(p=>p.equipo===eq).length}</div>`
   ).join('');
+}
+
+// ═══ SIDEBAR HISTORIAL ═══
+function openSidebar(equipo, nombre, color){
+  const ini=nombre.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  document.getElementById('sb-avatar').style.background=color||'#374151';
+  document.getElementById('sb-avatar').textContent=ini;
+  document.getElementById('sb-nombre').textContent=nombre;
+  document.getElementById('sb-equipo').textContent=equipo;
+
+  // Estado actual
+  const est=estadosData.find(e=>e.equipo===equipo);
+  const pill=document.getElementById('sb-estado-pill');
+  const cfg=est?ESTADO_CFG[est.estado]||{color:'#6b7280',bg:'#f3f4f6'}:{color:'#9ca3af',bg:'#f3f4f6'};
+  pill.textContent=est?est.estado:'Sin estado';
+  pill.style.cssText=`background:${cfg.bg};color:${cfg.color};padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;display:inline-block;margin-top:6px`;
+
+  // Open sidebar
+  document.getElementById('sidebar-historial').classList.add('open');
+  document.getElementById('sidebar-overlay').style.display='block';
+
+  // Load historial
+  document.getElementById('sb-historial').innerHTML='<div class="loading"><i class="ti ti-loader-2"></i>Cargando...</div>';
+  fetch(`${API}?action=getHistorialConductor&equipo=${encodeURIComponent(equipo)}&conductor=${encodeURIComponent(nombre)}`)
+    .then(r=>r.json())
+    .then(j=>{
+      if(!j.ok||!j.data.length){
+        document.getElementById('sb-historial').innerHTML='<div style="font-size:13px;color:var(--txt2);text-align:center;padding:1rem">Sin registros de hoy</div>';
+        return;
+      }
+      // Sort by hora
+      const rows=j.data.sort((a,b)=>a.hora.localeCompare(b.hora));
+      document.getElementById('sb-historial').innerHTML=rows.map(r=>{
+        const cfg2=ESTADO_CFG[r.estado]||{color:'#6b7280',bg:'#f3f4f6'};
+        return `<div class="historial-item">
+          <div class="historial-dot" style="background:${cfg2.color}"></div>
+          <div>
+            <div class="historial-estado" style="color:${cfg2.color}">${r.estado}</div>
+            ${r.lat?`<a href="https://www.google.com/maps?q=${r.lat},${r.lng}" target="_blank" class="historial-gps">📍 Ver ubicación</a>`:''}
+          </div>
+          <div class="historial-hora">${r.hora}</div>
+        </div>`;
+      }).join('');
+    })
+    .catch(()=>{ document.getElementById('sb-historial').innerHTML='<div style="color:var(--rojo);font-size:13px">Error al cargar</div>'; });
+}
+
+function closeSidebar(){
+  document.getElementById('sidebar-historial').classList.remove('open');
+  document.getElementById('sidebar-overlay').style.display='none';
 }
 
 function showToast(msg){
