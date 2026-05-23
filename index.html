@@ -7,8 +7,6 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
 :root{
   --azul:#C41E1E;--azul-c:#FDEAEA;--verde:#1A5C2A;--verde-c:#E6F2E9;
@@ -307,17 +305,23 @@ mark{background:#fef08a;border-radius:2px;padding:0 1px}
 
     <!-- MAPA -->
     <div id="tab-mapa" class="panel">
-      <div class="mapa-toolbar" style="padding:10px 1rem;background:#fff;border-bottom:1px solid var(--borde);display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:sticky;top:56px;z-index:400">
-        <div id="mapa-filter"></div>
-        <label style="font-size:12px;color:var(--txt2);display:flex;align-items:center;gap:5px">
-          <input type="checkbox" id="solo-hoy" onchange="renderMapa()"> Solo hoy
-        </label>
-        <button class="ruta-btn-c" onclick="openRouteCoord()" style="margin-left:auto;padding:7px 14px;font-size:12px">
-          <i class="ti ti-brand-google-maps"></i> Abrir ruta
-        </button>
+    <div class="inner">
+      <div class="mapa-wrap">
+        <div class="mapa-toolbar">
+          <div id="mapa-filter"></div>
+          <label style="font-size:12px;color:var(--txt2);display:flex;align-items:center;gap:5px;margin-left:auto">
+            <input type="checkbox" id="solo-hoy" onchange="renderMapa()"> Solo hoy
+          </label>
+        </div>
+        <div style="overflow-x:auto">
+          <svg id="mapa-svg" viewBox="0 0 680 400" style="width:100%;min-width:340px;height:auto;display:block"></svg>
+        </div>
+        <div class="mapa-legend" id="mapa-legend"></div>
       </div>
-      <div id="map" style="height:calc(100vh - 160px);width:100%;z-index:1"></div>
-      <div class="mapa-legend" id="mapa-legend" style="padding:10px 1rem;background:#fff;display:flex;flex-wrap:wrap;gap:10px;border-top:1px solid var(--borde)"></div>
+      <button class="ruta-btn-c" onclick="openRouteCoord()">
+        <i class="ti ti-brand-google-maps"></i> Abrir ruta en Google Maps
+      </button>
+    </div>
     </div>
 
     <!-- CONDUCTORES -->
@@ -797,93 +801,47 @@ function aprobarRuta(){
 
 // ═══ MAPA ═══
 function renderMapa(){
-  // Init Leaflet map if not yet created
-  if(!window._leafletMap){
-    window._leafletMap = L.map('map').setView([-33.585,-70.689],13);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-      attribution:'© <a href="https://openstreetmap.org">OpenStreetMap</a>',
-      maxZoom:19
-    }).addTo(window._leafletMap);
-    window._leafletMarkers = [];
-  }
-  // Clear existing markers
-  window._leafletMarkers.forEach(m=>window._leafletMap.removeLayer(m));
-  window._leafletMarkers=[];
-
-  const soloHoy = document.getElementById('solo-hoy')?.checked||false;
-  let pts = allPts;
+  const soloHoy=document.getElementById('solo-hoy')?.checked||false;
+  let pts=allPts;
   if(userRole==='conductor'){ if(selEq) pts=pts.filter(p=>p.equipo===selEq); pts=pts.filter(p=>p.visitaHoy); }
   if(mapFilter) pts=pts.filter(p=>p.equipo===mapFilter);
   if(soloHoy) pts=pts.filter(p=>p.visitaHoy);
 
-  // Setup filter
-  setupMapaFilter();
+  const W=680,H=400;
+  const cB={lat:-33.568,lng:-70.677},cS={lat:-33.601,lng:-70.701};
+  const lats=allPts.map((p,i)=>(p.sector.includes('BERNARDO')?cS.lat:cB.lat)+(Math.sin(i*1.7+p.nombre.length*.1)*.018));
+  const lngs=allPts.map((p,i)=>(p.sector.includes('BERNARDO')?cS.lng:cB.lng)+(Math.cos(i*1.3+p.nombre.length*.07)*.025));
+  const minLat=Math.min(...lats)-.01,maxLat=Math.max(...lats)+.01;
+  const minLng=Math.min(...lngs)-.015,maxLng=Math.max(...lngs)+.015;
+  const tx=lng=>((lng-minLng)/(maxLng-minLng))*W;
+  const ty=lat=>((maxLat-lat)/(maxLat-minLat))*H;
+  const pSet=new Set(pts.map(p=>allPts.indexOf(p)));
 
-  if(!pts.length){
-    document.getElementById('mapa-legend').innerHTML='<span style="font-size:12px;color:var(--txt2)">Sin pacientes para mostrar</span>';
-    return;
-  }
-
-  // Geocode and add markers
-  const bounds=[];
-  let done=0;
-  pts.forEach((p,i)=>{
-    const dir=p.corregida||p.dirMaps;
-    if(!dir){ done++; return; }
+  const pins=allPts.map((p,i)=>{
+    const inSet=pSet.has(i);
+    const x=tx(lngs[i]).toFixed(1),y=ty(lats[i]).toFixed(1);
     const col=COLORS[p.equipo]||'#374151';
-    const num=p.equipo.replace('UHD ','');
-    const esHoy=p.visitaHoy;
+    const op=inSet?'.92':'.15';
+    const ring=p.visitaHoy&&inSet?`<circle r="13" fill="none" stroke="${col}" stroke-width="2" opacity="0.35"/>`:'';
+    return `<g transform="translate(${x},${y})" style="cursor:pointer" onclick="showToast('${p.nombre.replace(/'/g,'`')}')">
+      ${ring}<circle r="10" fill="${col}" opacity="${op}"/>
+      <circle r="10" fill="none" stroke="white" stroke-width="1.5" opacity="${op}"/>
+      <text text-anchor="middle" dy="4" font-size="8" font-weight="700" fill="white" font-family="DM Sans" opacity="${op}">${p.equipo.replace('UHD ','')}</text>
+      <title>${p.nombre}\n${p.corregida||p.dirMaps||''}</title>
+    </g>`;
+  }).join('');
 
-    // Create colored circle marker
-    const icon=L.divIcon({
-      className:'',
-      html:`<div style="width:28px;height:28px;border-radius:50%;background:${col};border:2.5px solid white;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,.3);opacity:${esHoy?1:0.4};font-family:'DM Sans',sans-serif">${num}</div>`,
-      iconSize:[28,28],iconAnchor:[14,14]
-    });
+  const svg=document.getElementById('mapa-svg'); if(!svg) return;
+  svg.innerHTML=`<rect width="${W}" height="${H}" fill="#edf2ed"/>
+    <rect x="${tx(cB.lng-.04).toFixed(0)}" y="${ty(cB.lat+.025).toFixed(0)}" width="120" height="40" rx="6" fill="#dbeafe" opacity=".6"/>
+    <text x="${(tx(cB.lng-.04)+60).toFixed(0)}" y="${(ty(cB.lat+.025)+25).toFixed(0)}" text-anchor="middle" font-size="11" fill="#1e40af" font-weight="600" font-family="DM Sans">El Bosque</text>
+    <rect x="${tx(cS.lng-.035).toFixed(0)}" y="${ty(cS.lat+.022).toFixed(0)}" width="130" height="40" rx="6" fill="#ede9fe" opacity=".6"/>
+    <text x="${(tx(cS.lng-.035)+65).toFixed(0)}" y="${(ty(cS.lat+.022)+25).toFixed(0)}" text-anchor="middle" font-size="11" fill="#5b21b6" font-weight="600" font-family="DM Sans">San Bernardo</text>
+    ${pins}`;
 
-    // Use a staggered geocoding to avoid rate limits
-    setTimeout(()=>{
-      fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(dir)}&format=json&limit=1&countrycodes=cl`)
-        .then(r=>r.json())
-        .then(data=>{
-          if(data&&data[0]){
-            const lat=parseFloat(data[0].lat), lng=parseFloat(data[0].lon);
-            const marker=L.marker([lat,lng],{icon})
-              .addTo(window._leafletMap)
-              .bindPopup(`<div style="font-family:'DM Sans',sans-serif;min-width:200px">
-                <div style="font-weight:600;font-size:13px;margin-bottom:4px">${p.nombre}</div>
-                <div style="font-size:11px;color:#6b7280;margin-bottom:6px">${dir}</div>
-                ${p.referencia?`<div style="font-size:11px;color:#1a56db;margin-bottom:6px">📍 ${p.referencia}</div>`:''}
-                ${p.telefono?`<div style="font-size:11px;margin-bottom:8px">📞 ${p.telefono}</div>`:''}
-                <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(dir)}" target="_blank" 
-                   style="display:block;text-align:center;padding:6px;background:#1a56db;color:white;border-radius:6px;font-size:12px;font-weight:500;text-decoration:none">
-                  Navegar →
-                </a>
-              </div>`);
-            window._leafletMarkers.push(marker);
-            bounds.push([lat,lng]);
-          }
-        })
-        .catch(()=>{})
-        .finally(()=>{
-          done++;
-          if(done===pts.length&&bounds.length){
-            window._leafletMap.fitBounds(bounds,{padding:[30,30]});
-          }
-        });
-    }, i*300); // 300ms between requests to respect Nominatim limit
-  });
-
-  // Legend
-  const eqs=[...new Set(pts.map(p=>p.equipo))].sort();
-  document.getElementById('mapa-legend').innerHTML=eqs.map(eq=>
-    `<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--txt2)">
-      <div style="width:10px;height:10px;border-radius:50%;background:${COLORS[eq]||'#333'}"></div>
-      ${eq} — ${pts.filter(p=>p.equipo===eq).length}
-    </div>`).join('');
-
-  // Invalidate map size after tab switch
-  setTimeout(()=>window._leafletMap.invalidateSize(),200);
+  const eqsMapa=[...new Set(allPts.map(p=>p.equipo))].sort();
+  const leg=document.getElementById('mapa-legend');
+  if(leg) leg.innerHTML=eqsMapa.map(eq=>`<div class="leg-item"><div class="leg-dot" style="background:${COLORS[eq]||'#333'}"></div>${eq} — ${pts.filter(p=>p.equipo===eq).length}</div>`).join('');
 }
 
 
@@ -916,24 +874,81 @@ function checkIncidentes(){
     <div><div style="font-size:13px;font-weight:600;color:var(--rojo)">¡INCIDENTE!</div><div style="font-size:12px">${e.conductor} — ${e.equipo} · ${e.hora}</div></div></div>`).join('');
 }
 
+function formatHora(raw){
+  if(!raw) return '';
+  // Handle ISO format: 1899-12-30T16:01:45.000Z
+  if(String(raw).includes('T')){
+    try {
+      const d=new Date(raw);
+      return d.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit',timeZone:'America/Santiago'});
+    } catch(e){ return String(raw).substring(11,16); }
+  }
+  // Already HH:MM format
+  return String(raw).substring(0,5);
+}
+
+function formatFecha(raw){
+  if(!raw) return '';
+  if(String(raw).includes('T')){
+    try {
+      const d=new Date(raw);
+      return d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit',year:'numeric',timeZone:'America/Santiago'});
+    } catch(e){ return String(raw).substring(0,10); }
+  }
+  return String(raw).substring(0,10);
+}
+
 function renderConductoresRT(){
   const el=document.getElementById('cond-rt-list'); if(!el) return;
   if(!conductoresData.length){ el.innerHTML='<div class="empty">Sin conductores registrados</div>'; return; }
+
+  // Check incidentes activos
+  const incActivos=estadosData.filter(e=>e.estado==='Incidente'&&e.estado!=='CERRADO');
+  const banner=document.getElementById('inc-banner');
+  if(banner){
+    banner.innerHTML=incActivos.map(e=>`
+      <div class="incidente-banner">
+        <i class="ti ti-alert-triangle" style="color:var(--rojo);font-size:24px;flex-shrink:0"></i>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600;color:var(--rojo)">¡INCIDENTE!</div>
+          <div style="font-size:12px">${e.conductor} — ${e.equipo} · ${formatHora(e.hora)}</div>
+          ${e.lat?`<a href="https://www.google.com/maps?q=${e.lat},${e.lng}" target="_blank" style="font-size:11px;color:var(--azul)">📍 Ver ubicación en Maps</a>`:''}
+        </div>
+        <button onclick="cerrarIncidente('${e.equipo}')" style="padding:6px 12px;background:var(--rojo);color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;flex-shrink:0">
+          Cerrar caso
+        </button>
+      </div>`).join('');
+  }
+
   el.innerHTML=conductoresData.map(c=>{
     const est=estadosData.find(e=>e.equipo===c.equipo);
     const cfg=est?ESTADO_CFG[est.estado]||{color:'#6b7280',bg:'#f9fafb'}:{color:'#9ca3af',bg:'#f9fafb'};
     const col=COLORS[c.equipo]||'#374151';
     const ini=c.nombre.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+    const horaFormateada=est?formatHora(est.hora):'';
     return `<div class="cond-rt-card" style="border-left-color:${col}">
       <div class="cond-rt-av" style="background:${col}">${ini}</div>
-      <div><div style="font-size:14px;font-weight:600">${c.nombre}</div><div style="font-size:11px;color:var(--txt2)">${c.equipo}${c.empresa?' · '+c.empresa:''}</div></div>
+      <div><div style="font-size:14px;font-weight:600">${c.nombre}</div>
+        <div style="font-size:11px;color:var(--txt2)">${c.equipo}${c.empresa?' · '+c.empresa:''}</div>
+      </div>
       <div class="cond-rt-estado">
         <div class="cond-rt-pill" style="background:${cfg.bg};color:${cfg.color}">${est?est.estado:'Sin estado'}</div>
-        ${est?`<div style="font-size:10px;color:var(--txt2);margin-top:2px">${est.hora}</div>`:''}
+        ${horaFormateada?`<div style="font-size:10px;color:var(--txt2);margin-top:2px">${horaFormateada}</div>`:''}
       </div>
     </div>`;
   }).join('');
 }
+
+function cerrarIncidente(equipo){
+  if(!confirm('¿Confirmas cerrar el incidente de '+equipo+'?')) return;
+  fetch(API,{method:'POST',body:JSON.stringify({action:'cerrarIncidente',equipo})})
+    .then(r=>r.json())
+    .then(j=>{
+      if(j.ok){ showToast('✓ Incidente cerrado'); loadEstados(); }
+      else showToast('Error al cerrar');
+    }).catch(()=>showToast('Error de conexión'));
+}
+
 
 // ═══ CORRECCIONES ═══
 function updateCorrBadge(){
@@ -942,20 +957,66 @@ function updateCorrBadge(){
 }
 function renderCorrecciones(){
   const el=document.getElementById('corr-list'); if(!el) return;
-  if(!corrData.length){ el.innerHTML='<div class="empty"><i class="ti ti-check" style="font-size:28px;display:block;margin-bottom:8px;color:var(--verde)"></i>Sin correcciones.</div>'; return; }
-  el.innerHTML=corrData.map(c=>{
+  if(!corrData.length){
+    el.innerHTML='<div class="empty"><i class="ti ti-check" style="font-size:28px;display:block;margin-bottom:8px;color:var(--verde)"></i>Sin correcciones.</div>';
+    return;
+  }
+
+  const activas=corrData.filter(c=>String(c.estado).toUpperCase()==='PENDIENTE');
+  const cerradas=corrData.filter(c=>String(c.estado).toUpperCase()!=='PENDIENTE');
+
+  function corrCard(c, cerrada=false){
     const col=COLORS[c.equipo]||'#374151';
-    return `<div class="corr-card"><div class="corr-hdr">
-      <span class="corr-eq" style="background:${col}">${c.equipo}</span>
-      <span style="font-size:13px;font-weight:600">${c.nombre}</span>
-      <span style="font-size:11px;color:var(--txt2);margin-left:auto">${c.fecha} ${c.hora}</span>
-    </div>
-    <div style="font-size:12px;color:var(--txt2);margin-bottom:3px;display:flex;gap:5px"><i class="ti ti-map-pin" style="color:var(--rojo);font-size:13px;flex-shrink:0;margin-top:1px"></i>Original: ${c.dirOriginal||'—'}</div>
-    <div style="font-size:12px;color:var(--verde);font-weight:500;display:flex;gap:5px"><i class="ti ti-map-pin" style="font-size:13px;flex-shrink:0;margin-top:1px"></i>Corregida: ${c.dirCorregida||'—'}</div>
-    ${c.lat?`<div style="font-size:11px;color:var(--txt2);margin-top:4px;font-family:monospace">GPS: ${c.lat}, ${c.lng}</div>`:''}
+    const fecha=formatFecha(c.fecha);
+    const hora=formatHora(c.hora);
+    return `<div class="corr-card" style="${cerrada?'opacity:.6;border-left-color:#9ca3af':''}">
+      <div class="corr-hdr">
+        <span class="corr-eq" style="background:${cerrada?'#9ca3af':col}">${c.equipo}</span>
+        <span style="font-size:13px;font-weight:600">${c.nombre}</span>
+        <span style="font-size:11px;color:var(--txt2);margin-left:auto">${fecha} ${hora}</span>
+      </div>
+      <div style="font-size:12px;color:var(--txt2);margin-bottom:3px;display:flex;gap:5px">
+        <i class="ti ti-map-pin" style="color:var(--rojo);font-size:13px;flex-shrink:0;margin-top:1px"></i>
+        Original: ${c.dirOriginal||'—'}
+      </div>
+      <div style="font-size:12px;color:var(--verde);font-weight:500;display:flex;gap:5px;margin-bottom:6px">
+        <i class="ti ti-map-pin" style="font-size:13px;flex-shrink:0;margin-top:1px"></i>
+        Corregida: ${c.dirCorregida||'—'}
+      </div>
+      ${c.lat?`<div style="font-size:11px;color:var(--txt2);margin-bottom:6px;font-family:monospace">GPS: ${c.lat}, ${c.lng}</div>`:''}
+      ${!cerrada?`<button onclick="cerrarCorreccion(${corrData.indexOf(c)})" 
+        style="width:100%;padding:7px;background:#fff;border:1.5px solid var(--verde);border-radius:8px;color:var(--verde);font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">
+        ✓ Marcar como actualizada en sistema
+      </button>`:`<div style="font-size:11px;color:var(--verde);font-weight:500">✓ Actualizada en sistema</div>`}
     </div>`;
-  }).join('');
+  }
+
+  let html='';
+  if(activas.length){
+    html+=`<div style="font-size:12px;font-weight:600;color:var(--rojo);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">
+      Activas (${activas.length})</div>`;
+    html+=activas.map(c=>corrCard(c,false)).join('');
+  }
+  if(cerradas.length){
+    html+=`<div style="font-size:12px;font-weight:600;color:var(--gris);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 8px">
+      Cerradas (${cerradas.length})</div>`;
+    html+=cerradas.map(c=>corrCard(c,true)).join('');
+  }
+  el.innerHTML=html;
 }
+
+function cerrarCorreccion(idx){
+  if(!confirm('¿Confirmas que ya actualizaste esta dirección en el sistema?')) return;
+  const c=corrData[idx];
+  fetch(API,{method:'POST',body:JSON.stringify({action:'cerrarCorreccion',fila:c.fila})})
+    .then(r=>r.json())
+    .then(j=>{
+      if(j.ok){ corrData[idx].estado='CERRADA'; renderCorrecciones(); updateCorrBadge(); showToast('✓ Corrección cerrada'); }
+      else showToast('Error al cerrar');
+    }).catch(()=>showToast('Error de conexión'));
+}
+
+
 function exportCorr(){
   if(!corrData.length){ showToast('Sin correcciones'); return; }
   const h=['Fecha','Hora','Equipo','Paciente','Dir Original','Dir Corregida','Lat','Lng','Estado'];
@@ -1087,13 +1148,7 @@ function switchTab(tab){
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',all[i]===tab));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   const el=document.getElementById('tab-'+tab); if(el) el.classList.add('active');
-  if(tab==='mapa'){
-    setupMapaFilter();
-    setTimeout(()=>{
-      renderMapa();
-      if(window._leafletMap) window._leafletMap.invalidateSize();
-    },100);
-  }
+  if(tab==='mapa'){ setupMapaFilter(); renderMapa(); }
   if(tab==='conductores'){ loadEstados(); }
   if(tab==='correcciones'){ loadCorrecciones(); }
   if(tab==='gestion'){ loadConductores(); }
