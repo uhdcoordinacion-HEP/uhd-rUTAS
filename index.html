@@ -1079,7 +1079,7 @@ function renderCorrecciones(){
         <i class="ti ti-map-pin" style="font-size:13px;flex-shrink:0;margin-top:1px"></i>
         Corregida: ${c.dirCorregida||'—'}
       </div>
-      ${c.lat?`<div style="font-size:11px;color:var(--txt2);margin-bottom:6px;font-family:monospace">GPS: ${c.lat}, ${c.lng}</div>`:''}
+      ${c.referencia?`<div style='font-size:12px;color:var(--azul);display:flex;gap:5px;margin-bottom:6px'><i class='ti ti-info-circle' style='font-size:13px;flex-shrink:0;margin-top:1px'></i>Referencia: ${c.referencia}</div>`:''}${c.lat?`<div style='font-size:11px;color:var(--txt2);margin-bottom:6px;font-family:monospace'>GPS: ${c.lat}, ${c.lng}</div>`:''}
       ${!cerrada?`<button onclick="cerrarCorreccion(${corrData.indexOf(c)})" 
         style="width:100%;padding:7px;background:#fff;border:1.5px solid var(--verde);border-radius:8px;color:var(--verde);font-size:12px;font-weight:500;cursor:pointer;font-family:DM Sans,sans-serif">
         ✓ Marcar como actualizada en sistema
@@ -1682,6 +1682,7 @@ function initInformes(){
   // Populate conductor selector
   const sel = document.getElementById('inf-conductor');
   sel.innerHTML = '<option value="">— Selecciona conductor —</option>'
+    + '<option value="TODOS|TODOS">— Todos los conductores —</option>'
     + conductoresData.map(c=>'<option value="'+c.equipo+'|'+c.nombre+'">'+c.nombre+' ('+c.equipo+')</option>').join('');
   // Default date = today
   const hoy = new Date();
@@ -1692,6 +1693,40 @@ function initInformes(){
   loadInforme();
 }
 
+function renderInformeData(registros, fecha, conductor, cont){
+  if(!registros.length){ cont.innerHTML='<div class="empty">Sin registros para esta fecha</div>'; return; }
+  const visitas = registros.filter(r=>r.estado==='En domicilio');
+  const incidentes = registros.filter(r=>r.estado.includes('Incidente'));
+  const horaInicio = registros[0]?.hora||'';
+  const horaFin = registros[registros.length-1]?.hora||'';
+  let html = '<div class="stats" style="grid-template-columns:repeat(4,1fr)">'
+    +'<div class="stat"><div class="stat-l">Inicio</div><div class="stat-v" style="font-size:18px">'+horaInicio+'</div></div>'
+    +'<div class="stat"><div class="stat-l">Fin</div><div class="stat-v" style="font-size:18px">'+horaFin+'</div></div>'
+    +'<div class="stat"><div class="stat-l">Visitas</div><div class="stat-v" style="color:var(--verde)">'+visitas.length+'</div></div>'
+    +'<div class="stat"><div class="stat-l">Incidentes</div><div class="stat-v" style="color:var(--rojo)">'+incidentes.length+'</div></div>'
+    +'</div>'
+    +'<div style="font-size:12px;font-weight:500;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em;margin:1rem 0 8px">Historial del día</div>'
+    +'<div style="border:.5px solid var(--borde);border-radius:10px;overflow:hidden">';
+  registros.forEach((r,i)=>{
+    const cfg = ESTADO_CFG[r.estado]||{color:'#6b7280',bg:'#f9fafb'};
+    html += '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;'+(i>0?'border-top:.5px solid var(--borde)':'')+';background:'+(i%2===0?'#fff':'#f9fafb')+'">'
+      +'<div style="width:8px;height:8px;border-radius:50%;background:'+cfg.color+';flex-shrink:0"></div>'
+      +'<div style="flex:1">'
+      +(conductor==='TODOS'?'<div style="font-size:10px;color:var(--txt2);font-weight:600">'+r.equipo+' · '+r.conductor+'</div>':'')
+      +'<div style="font-size:13px;font-weight:500;color:'+cfg.color+'">'+r.estado+'</div>'
+      +(r.paciente?'<div style="font-size:11px;color:var(--txt2)">👤 '+r.paciente+'</div>':'')
+      +'</div>'
+      +'<div style="font-size:12px;color:var(--txt2);flex-shrink:0">'+r.hora+'</div>'
+      +(r.lat?'<a href="https://www.google.com/maps?q='+r.lat+','+r.lng+'" target="_blank" style="font-size:11px;color:var(--azul);text-decoration:none;flex-shrink:0">📍</a>':'')
+      +'</div>';
+  });
+  html += '</div><button id="btn-export-inf" style="width:100%;padding:11px;background:var(--rojo);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:DM Sans,sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:1rem"><i class="ti ti-file-type-pdf"></i> Exportar PDF</button>';
+  cont.innerHTML = html;
+  cont._registros = registros; cont._conductor = conductor; cont._fecha = fecha;
+  const btn = document.getElementById('btn-export-inf');
+  if(btn) btn.onclick = ()=>exportInforme(conductor, fecha);
+}
+
 function loadInforme(){
   const val = document.getElementById('inf-conductor').value;
   const fechaISO = document.getElementById('inf-fecha').value;
@@ -1699,11 +1734,30 @@ function loadInforme(){
   if(!val||!fechaISO){ content.innerHTML='<div class="empty">Selecciona conductor y fecha</div>'; return; }
 
   const [equipo,conductor] = val.split('|');
+  const esTodos = equipo === 'TODOS';
   // Convert YYYY-MM-DD to DD/MM/YYYY
   const [yyyy,mm,dd] = fechaISO.split('-');
   const fecha = dd+'/'+mm+'/'+yyyy;
 
   content.innerHTML='<div class="loading"><i class="ti ti-loader-2"></i>Cargando...</div>';
+
+  if(esTodos){
+    // Load all conductors for this date
+    Promise.all(conductoresData.map(c=>
+      fetch(API+'?action=getHistorialConductor&equipo='+encodeURIComponent(c.equipo)+'&conductor='+encodeURIComponent(c.nombre))
+        .then(r=>r.json())
+        .then(j=>j.ok?j.data:[])
+        .catch(()=>[])
+    )).then(results=>{
+      const todos = results.flat().filter(r=>r.fecha===fecha).sort((a,b)=>a.equipo.localeCompare(b.equipo)||a.hora.localeCompare(b.hora));
+      if(!todos.length){
+        content.innerHTML='<div class="empty">Sin registros para el '+fecha+'</div>';
+        return;
+      }
+      renderInformeTodos(todos, fecha, content);
+    });
+    return;
+  }
 
   fetch(API+'?action=getHistorialConductor&equipo='+encodeURIComponent(equipo)+'&conductor='+encodeURIComponent(conductor))
     .then(r=>r.json())
@@ -1742,6 +1796,7 @@ function loadInforme(){
           +'<div style="flex:1">'
           +'<div style="font-size:13px;font-weight:500;color:'+cfg.color+'">'+r.estado+'</div>'
           +(r.paciente?'<div style="font-size:11px;color:var(--txt2)">👤 '+r.paciente+'</div>':'')
+          +(r.referencia?'<div style="font-size:11px;color:var(--azul,#1a56db)">📌 '+r.referencia+'</div>':'')
           +'</div>'
           +'<div style="font-size:12px;color:var(--txt2);flex-shrink:0">'+r.hora+'</div>'
           +(r.lat?'<a href="https://www.google.com/maps?q='+r.lat+','+r.lng+'" target="_blank" style="font-size:11px;color:var(--azul);text-decoration:none;flex-shrink:0">📍</a>':'')
@@ -1751,7 +1806,7 @@ function loadInforme(){
 
       // Export button
       html += '<button id="btn-export-inf" style="width:100%;padding:11px;background:var(--verde);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:DM Sans,sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;margin-top:1rem"><i class="ti ti-download"></i> Exportar Excel</button>';
-        +'<i class="ti ti-download"></i> Exportar Excel</button>';
+        +'<i class="ti ti-pdf"></i> Exportar PDF</button>';
 
       content.innerHTML = html;
       // Store for export
@@ -1766,16 +1821,43 @@ function loadInforme(){
 }
 
 function exportInforme(conductor, fecha){
-  const content = document.getElementById('informe-content');
-  const registros = content._registros;
+  const cont = document.getElementById('informe-content');
+  const registros = cont._registros;
   if(!registros||!registros.length){ showToast('Sin datos para exportar'); return; }
-  const h = ['Fecha','Hora','Equipo','Conductor','Estado','Paciente','Lat','Lng'];
-  const rows = registros.map(r=>[r.fecha,r.hora,r.equipo,r.conductor,r.estado,r.paciente||'',r.lat||'',r.lng||''].map(v=>'"'+String(v||'').replace(/"/g,'""')+'"').join(','));
-  const csv = [h.join(','),...rows].join('\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv'}));
-  a.download = 'UHD_'+conductor+'_'+fecha.replace(/\//g,'-')+'.csv';
-  a.click();
+
+  const titulo = conductor==='TODOS' ? 'Todos los conductores' : conductor;
+  let estadosHTML = '';
+  registros.forEach(r=>{
+    const cfg = ESTADO_CFG[r.estado]||{color:'#6b7280'};
+    estadosHTML += '<tr><td>'+r.fecha+'</td><td>'+r.hora+'</td><td>'+r.equipo+'</td><td>'+r.conductor+'</td>'
+      +'<td style="color:'+cfg.color+';font-weight:500">'+r.estado+'</td>'
+      +'<td>'+(r.paciente||'')+'</td>'
+      +(r.lat?'<td><a href="https://www.google.com/maps?q='+r.lat+','+r.lng+'" target="_blank">📍 Ver</a></td>':'<td></td>')
+      +'</tr>';
+  });
+
+  const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'
+    + 'body{font-family:Arial,sans-serif;padding:24px;color:#111;font-size:13px}'
+    + 'h1{color:#C41E1E;font-size:20px;margin-bottom:4px}'
+    + '.sub{color:#6b7280;font-size:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #C41E1E}'
+    + 'table{width:100%;border-collapse:collapse}'
+    + 'th{background:#1A5C2A;color:#fff;padding:7px 10px;text-align:left;font-size:11px}'
+    + 'td{padding:6px 10px;border-bottom:1px solid #e5e7eb;font-size:11px}'
+    + 'tr:nth-child(even){background:#f9fafb}'
+    + '.footer{margin-top:16px;font-size:10px;color:#9ca3af;text-align:center;border-top:1px solid #e5e7eb;padding-top:10px}'
+    + '@media print{@page{margin:1cm}}'
+    + '</style></head><body>'
+    + '<h1>UHD Rutas — Informe de conductores</h1>'
+    + '<div class="sub">'+titulo+' · '+fecha+'  ·  Total registros: '+registros.length+'</div>'
+    + '<table><thead><tr><th>Fecha</th><th>Hora</th><th>Equipo</th><th>Conductor</th><th>Estado</th><th>Paciente</th><th>Ubicación</th></tr></thead>'
+    + '<tbody>'+estadosHTML+'</tbody></table>'
+    + '<div class="footer">Generado por UHD Rutas · '+new Date().toLocaleString('es-CL')+'</div>'
+    + '</body></html>';
+
+  const win = window.open('','_blank');
+  win.document.write(html);
+  win.document.close();
+  setTimeout(()=>win.print(), 500);
 }
 
 function showToast(msg){
